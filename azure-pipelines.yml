@@ -136,7 +136,7 @@ stages:
             inputs:
               azureSubscription: 'Resource Manager - Tailspin - Space Game'
               keyVaultName: '$(keyVaultName)'
-              secretsFilter: '*' 
+              secretsFilter: 'adminPassword','firstrun' 
           - download: current
             artifact: dropDacpac
             patterns: '**/*'
