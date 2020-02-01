@@ -93,8 +93,8 @@ stages:
         pathToPublish: '$(Build.ArtifactStagingDirectory)'
         artifactName: dropDacpac
       condition: succeededOrFailed()
-      
- - stage: 'Provision'
+
+- stage: 'Provision'
   displayName: 'Provision the database and web application'
   jobs: 
   - job: 'DeployInfrastructure'
@@ -116,12 +116,11 @@ stages:
         csmFile: 'template.json'
         csmParametersFile: 'deploymentParameters.json'
         deploymentMode: 'Incremental'
-        deploymentOutputs: ResourceGroupDeploymentOutputs 
-        
+        deploymentOutputs: ResourceGroupDeploymentOutputs 
 
 - stage: DBAVerificationScript
   displayName: 'Script database schema changes'
-  dependsOn: Build
+  dependsOn: Provision
   jobs:
   - deployment: DBAVerificationScript
     pool:
@@ -132,12 +131,12 @@ stages:
     strategy:
       runOnce:
         deploy:
-          steps:
+          steps: 
           - task: AzureKeyVault@1
             inputs:
               azureSubscription: 'Resource Manager - Tailspin - Space Game'
               keyVaultName: '$(keyVaultName)'
-              secretsFilter: '*' 
+              secretsFilter: '*' 
           - download: current
             artifact: dropDacpac
             patterns: '**/*'
@@ -146,9 +145,9 @@ stages:
             inputs:
               azureSubscription: 'Resource Manager - Tailspin - Space Game'
               authenticationType: 'server'
-              serverName: '$(servername).database.windows.net'
-              databaseName: '$(databasename)'
-              sqlUsername: '$(adminlogin)'
+              serverName: 'tailspin-space-game-sql-dev-$(uniqueSuffix).database.windows.net'
+              databaseName: 'tailspindatabase'
+              sqlUsername: 'azuresql'
               sqlPassword: '$(adminPassword)'
               deployType: 'DacpacTask'
               deploymentAction: 'Script'
@@ -160,11 +159,47 @@ stages:
               targetType: 'inline'
               script: | 
                 Write-Host "Auto Generated SQL Update Script:"
-                Get-Content d:\a\1\s\GeneratedOutputFiles\$(databasename)_Script.sql | foreach {Write-Output $_}
+                Get-Content d:\a\1\s\GeneratedOutputFiles\tailspindatabase_Script.sql | foreach {Write-Output $_}
+          - task: PowerShell@2
+            displayName: Show change script and check for schema changes
+            inputs:
+              targetType: 'inline'
+              script: | 
+                # Print the schema change script
+                Write-Host "Auto Generated SQL Update Script:"
+                Get-Content d:\a\1\s\GeneratedOutputFiles\tailspindatabase_Script.sql | foreach {Write-Output $_}
+
+                # Check for schema changes
+                $file = Get-Content "d:\a\1\s\GeneratedOutputFiles\tailspindatabase_Script.sql"
+                $containsWord = $file | %{$_ -match "CREATE" -or $_ -match "ALTER" -or $_ -match "DROP"}
+                if ($containsWord -contains $true) {
+                  Install-Module VSTeam -Scope CurrentUser -Force
+                  Set-VSTeamAccount –Account $(Acct) -PersonalAccessToken $(PAT)
+                  $methodParameters = @{
+                    ProjectName = "$(System.TeamProject)"
+                    Name = "Release"}
+                  $vg = Get-VSTeamVariableGroup @methodParameters
+                  $vars = @{}
+                  $vg.variables | Get-Member -MemberType *Property | %{$vars.($_.Name) = $vg.variables.($_.Name)}
+                  $varName = "schemaChanged"
+                  $vars.$varName= @{}
+                  $vars.$varName.value = "True"
+                  $vars.$varName.isSecret = $false
+                  $methodParameters = @{
+                    id = $vg.id
+                    ProjectName = "$(System.TeamProject)"
+                    Name = "Release"
+                    Description = ""
+                    Type = "Vsts"
+                    Variables = $vars}
+                  Update-VSTeamVariableGroup @methodParameters}
 
 - stage: DBAVerificationApply
   displayName: 'Apply database schema changes'
   dependsOn: DBAVerificationScript
+  condition: and(succeeded('DBAVerificationScript'), eq(variables['schemaChanged'], True))
+  variables:
+  - group: 'Release'
   jobs:
   - deployment: DBAVerificationApply
     pool:
@@ -176,11 +211,11 @@ stages:
       runOnce:
         deploy:
           steps:
-           - task: AzureKeyVault@1
+          - task: AzureKeyVault@1
             inputs:
               azureSubscription: 'Resource Manager - Tailspin - Space Game'
               keyVaultName: '$(keyVaultName)'
-              secretsFilter: '*' 
+              secretsFilter: '*' 
           - download: current
             artifact: dropDacpac
             patterns: '**/*'
@@ -189,15 +224,36 @@ stages:
             inputs:
               azureSubscription: 'Resource Manager - Tailspin - Space Game'
               authenticationType: 'server'
-              serverName: '$(servername).database.windows.net'
-              databaseName: '$(databasename)'
-              sqlUsername: '$(adminlogin)'
+              serverName: 'tailspin-space-game-sql-dev-$(uniqueSuffix).database.windows.net'
+              databaseName: 'tailspindatabase'
+              sqlUsername: 'azuresql'
               sqlPassword: '$(adminPassword)'
               deployType: 'DacpacTask'
               deploymentAction: 'Publish'
               dacpacFile: '$(Pipeline.Workspace)/dropDacpac/Tailspin.SpaceGame.Database/bin/Debug/Tailspin.SpaceGame.Database.dacpac'
               ipDetectionMethod: 'AutoDetect'
-
+          - task: PowerShell@2
+            displayName: 'Remove "schemaChanged" pipeline variable'
+            inputs:
+              targetType: 'inline'
+              script: | 
+                Install-Module VSTeam -Scope CurrentUser -Force
+                Set-VSTeamAccount –Account $(Acct) -PersonalAccessToken $(PAT)
+                $methodParameters = @{
+                  ProjectName = "$(System.TeamProject)"
+                  Name = "Release"}
+                $vg = Get-VSTeamVariableGroup  @methodParameters 
+                $vars = @{}
+                $vg.variables | Get-Member -MemberType *Property | %{$vars.($_.Name) = $vg.variables.($_.Name)}
+                $vars.Remove("schemaChanged")
+                $methodParameters = @{
+                  id = $vg.id
+                  ProjectName = "$(System.TeamProject)"
+                  Name = "Release"
+                  Description = ""
+                  Type = "Vsts"
+                  Variables = $vars}
+                Update-VSTeamVariableGroup @methodParameters
 
 - stage: 'Dev'
   displayName: 'Deploy to the dev environment'
@@ -225,7 +281,7 @@ stages:
             inputs:
               azureSubscription: 'Resource Manager - Tailspin - Space Game'
               keyVaultName: '$(keyVaultName)'
-              secretsFilter: '*' 
+              secretsFilter: '*' 
           - download: current
             artifact: drop
           - task: AzureWebApp@1
@@ -240,4 +296,4 @@ stages:
               azureSubscription: 'Resource Manager - Tailspin - Space Game'
               appName: 'tailspin-space-game-web-dev-$(uniqueSuffix)'
               connectionStrings: |
-                [{ "name": "DefaultConnection","value": "$(connectionString)","type": "SQLAzure","slotSetting": false }] 
+                [{ "name": "DefaultConnection","value": "$(connectionString)","type": "SQLAzure","slotSetting": false }]
